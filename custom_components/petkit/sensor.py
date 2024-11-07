@@ -23,6 +23,7 @@ from homeassistant.const import(
     UnitOfVolume
 )
 from homeassistant.core import callback, HomeAssistant
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -119,6 +120,11 @@ async def async_setup_entry(
         if feeder_data.type == 'feeder':
             sensors.append(
                 FoodLeft(coordinator, feeder_id)
+            )
+
+        if feeder_data.type in ['feedermini']:
+            sensors.append(
+                FoodDispensedHistory(coordinator, feeder_id)
             )
 
     # Litter boxes
@@ -4138,3 +4144,102 @@ class FoodLeft(CoordinatorEntity, SensorEntity):
         """Return percent as the native unit."""
 
         return PERCENTAGE
+
+
+class FoodDispensedHistory(CoordinatorEntity, SensorEntity):
+    """Track total food dispensed for PetKit feeders."""
+
+    def __init__(self, coordinator, feeder_id):
+        super().__init__(coordinator)
+        self.feeder_id = feeder_id
+        self._attr_extra_state_attributes = {
+            "last_feeding_time": None,
+            "last_amount": 0
+        }
+        # Initialize history in coordinator if not present
+        if not hasattr(coordinator, "food_dispensed"):
+            coordinator.food_dispensed = {}
+        if feeder_id not in coordinator.food_dispensed:
+            coordinator.food_dispensed[feeder_id] = 0
+
+    @property
+    def feeder_data(self) -> Feeder:
+        """Handle coordinator Feeder data."""
+        return self.coordinator.data.feeders[self.feeder_id]
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device registry information for this entity."""
+        return {
+            "identifiers": {(DOMAIN, self.feeder_data.id)},
+            "name": self.feeder_data.data['name'],
+            "manufacturer": "PetKit",
+            "model": FEEDERS[self.feeder_data.type],
+            "sw_version": f'{self.feeder_data.data["firmware"]}'
+        }
+
+    @property
+    def unique_id(self) -> str:
+        """Sets unique ID for this entity."""
+        return str(self.feeder_data.id) + '_dispensed'
+
+    @property
+    def has_entity_name(self) -> bool:
+        """Indicate that entity has name defined."""
+        return True
+
+    @property
+    def translation_key(self) -> str:
+        """Translation key for this entity."""
+        return 'dispensed'
+
+    @property
+    def native_value(self) -> int:
+        """Return total food dispensed today."""
+        return self.coordinator.food_dispensed[self.feeder_id]
+
+    @property
+    def native_unit_of_measurement(self) -> UnitOfMass:
+        """Return grams as the native unit."""
+        return UnitOfMass.GRAMS
+
+    @property
+    def state_class(self) -> SensorStateClass:
+        """Return the type of state class."""
+        return SensorStateClass.TOTAL_INCREASING
+
+    @property
+    def icon(self) -> str:
+        """Set icon."""
+        return 'mdi:food-drumstick'
+
+    def log_feeding(self, amount: int) -> None:
+        """Log a feeding event."""
+        self.coordinator.food_dispensed[self.feeder_id] += amount
+        self._attr_extra_state_attributes.update({
+            "last_feeding_time": datetime.now().isoformat(),
+            "last_amount": amount
+        })
+        self.async_write_ha_state()
+        LOGGER.debug(f"Logged feeding: {amount}g for feeder {self.feeder_id}")
+
+    async def async_added_to_hass(self) -> None:
+        """Handle added to Hass."""
+        await super().async_added_to_hass()
+
+        @callback
+        async def _reset_counter(now):
+            """Reset daily counter at midnight."""
+            self.coordinator.food_dispensed[self.feeder_id] = 0
+            self._attr_extra_state_attributes.update({
+                "last_feeding_time": None,
+                "last_amount": 0
+            })
+            self.async_write_ha_state()
+            LOGGER.debug(f"Reset daily counter for feeder {self.feeder_id}")
+
+        # Register callback for midnight reset
+        remove_track_time = async_track_time_change(
+            self.hass, _reset_counter, hour=0, minute=0, second=0
+        )
+        self.async_on_remove(remove_track_time)

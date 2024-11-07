@@ -35,6 +35,7 @@ from .const import(
 )
 from .coordinator import PetKitDataUpdateCoordinator
 from .exceptions import PetKitBluetoothError
+from .sensor import FoodDispensedHistory
 
 LIGHT_BRIGHTNESS_TO_PETKIT = {v: k for (k, v) in LIGHT_BRIGHTNESS_COMMAND.items()}
 LIGHT_BRIGHTNESS_TO_PETKIT_NUMBERED = {v: k for (k, v) in LIGHT_BRIGHTNESS_NAMED.items()}
@@ -360,10 +361,16 @@ class ManualFeed(CoordinatorEntity, SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""
-
         ha_to_petkit = MANUAL_FEED_TO_PETKIT.get(option)
 
         await self.coordinator.client.manual_feeding(self.feeder_data, ha_to_petkit)
+
+        # Find and update the history sensor
+        for entity in self.hass.data[DOMAIN][self.coordinator.config_entry.entry_id].get("entities", []):
+            if isinstance(entity, FoodDispensedHistory) and entity.feeder_id == self.feeder_id:
+                entity.log_feeding(ha_to_petkit)
+                break
+
         await self.coordinator.async_request_refresh()
 
 
