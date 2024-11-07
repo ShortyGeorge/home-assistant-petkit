@@ -73,11 +73,13 @@ class PetKitDataUpdateCoordinator(DataUpdateCoordinator):
                         previous_feeder = self.data.feeders.get(feeder_id)
                         if previous_feeder:
                             previous_amount = previous_feeder.data['state'].get('feedState', {}).get('realAmountTotal', 0)
+                        LOGGER.debug(f'Checking previous amount for feeder {feeder_id} - {previous_amount} vs {current_amount}')
 
                     # If there's a difference, update the total
                     if current_amount > previous_amount:
                         amount_difference = current_amount - previous_amount
                         self.food_dispensed[feeder_id] += amount_difference
+                        LOGGER.debug(f'Feeder {feeder_id} dispensed {amount_difference} grams of food')
 
                         # Notify any registered food dispensed sensors
                         for entity in self.hass.data[DOMAIN][self.config_entry.entry_id].get("entities", []):

@@ -22,7 +22,7 @@ from homeassistant.const import(
     UnitOfTime,
     UnitOfVolume
 )
-from homeassistant.core import callback, HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
