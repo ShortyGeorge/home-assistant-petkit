@@ -32,6 +32,7 @@ from .const import(
     WF_MODE_COMMAND,
     WF_MODE_NAMED,
     WF_MODE_OPTIONS,
+    LOGGER
 )
 from .coordinator import PetKitDataUpdateCoordinator
 from .exceptions import PetKitBluetoothError
@@ -363,13 +364,13 @@ class ManualFeed(CoordinatorEntity, SelectEntity):
         """Change the selected option."""
         ha_to_petkit = MANUAL_FEED_TO_PETKIT.get(option)
 
+        LOGGER.debug(f'Sending manual feed command to {self.feeder_data.data["name"]} for {option} ({ha_to_petkit})')
         await self.coordinator.client.manual_feeding(self.feeder_data, ha_to_petkit)
 
-        # Find and update the history sensor
-        for entity in self.hass.data[DOMAIN][self.coordinator.config_entry.entry_id].get("entities", []):
-            if isinstance(entity, FoodDispensedHistory) and entity.feeder_id == self.feeder_id:
-                entity.log_feeding(ha_to_petkit)
-                break
+        self.hass.bus.async_fire('petkit_manual_feed', {
+            'feeder_id': self.feeder_id,
+            'amount': ha_to_petkit,
+        })
 
         await self.coordinator.async_request_refresh()
 

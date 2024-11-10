@@ -54,7 +54,7 @@ class PetKitDataUpdateCoordinator(DataUpdateCoordinator):
 
         try:
             data = await self.client.get_petkit_data()
-            LOGGER.debug(f'Found the following PetKit devices/pets: {data}')
+            # LOGGER.debug(f'Found the following PetKit devices/pets: {data}')
 
             # Check for feedings since last update
             for feeder_id, feeder_data in data.feeders.items():
@@ -62,30 +62,28 @@ class PetKitDataUpdateCoordinator(DataUpdateCoordinator):
                 if feeder_id not in self.food_dispensed:
                     self.food_dispensed[feeder_id] = 0
 
-                # Check scheduled feedings
-                if 'feed' in feeder_data.data:
-                    feed_state = feeder_data.data['state'].get('feedState', {})
-                    current_amount = feed_state.get('realAmountTotal', 0)
+                # Get the total amount dispensed today from the feeder's state
+                feeder_state = feeder_data.data.get('state', {})
+                current_total = feeder_state.get('realAmountTotal', 0)
 
-                    # Get previous amount from coordinator data if exists
-                    previous_amount = 0
-                    if hasattr(self, 'data') and self.data:
-                        previous_feeder = self.data.feeders.get(feeder_id)
-                        if previous_feeder:
-                            previous_amount = previous_feeder.data['state'].get('feedState', {}).get('realAmountTotal', 0)
-                        LOGGER.debug(f'Checking previous amount for feeder {feeder_id} - {previous_amount} vs {current_amount}')
+                # Get previous total from the last data
+                previous_total = 0
+                if self.data and self.data.feeders and feeder_id in self.data.feeders:
+                    previous_feeder_data = self.data.feeders[feeder_id].data
+                    previous_feeder_state = previous_feeder_data.get('state', {})
+                    previous_total = previous_feeder_state.get('realAmountTotal', 0)
 
-                    # If there's a difference, update the total
-                    if current_amount > previous_amount:
-                        amount_difference = current_amount - previous_amount
-                        self.food_dispensed[feeder_id] += amount_difference
-                        LOGGER.debug(f'Feeder {feeder_id} dispensed {amount_difference} grams of food')
+                # Calculate the difference
+                if current_total > previous_total:
+                    amount_difference = current_total - previous_total
+                    self.food_dispensed[feeder_id] += amount_difference
+                    LOGGER.debug(f"Detected feeding of {amount_difference}g for feeder {feeder_id}")
 
-                        # Notify any registered food dispensed sensors
-                        for entity in self.hass.data[DOMAIN][self.config_entry.entry_id].get("entities", []):
-                            if isinstance(entity, FoodDispensedHistory) and entity.feeder_id == feeder_id:
-                                entity.log_feeding(amount_difference)
-                                break
+                    # Notify any registered food dispensed sensors
+                    for entity in self.hass.data[DOMAIN][self.config_entry.entry_id]["entities"]:
+                        if isinstance(entity, FoodDispensedHistory) and entity.feeder_id == feeder_id:
+                            entity.log_feeding(amount_difference)
+                            break
 
         except (AuthError, RegionError) as error:
             raise ConfigEntryAuthFailed(error) from error

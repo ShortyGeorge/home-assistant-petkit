@@ -14,6 +14,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import(
+    STATE_UNKNOWN,
     PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     UnitOfEnergy,
@@ -36,7 +37,8 @@ from .const import (
     LITTER_BOXES,
     PETKIT_COORDINATOR,
     PURIFIERS,
-    WATER_FOUNTAINS
+    WATER_FOUNTAINS,
+    LOGGER
 )
 from .coordinator import PetKitDataUpdateCoordinator
 from .litter_events import (
@@ -4146,7 +4148,7 @@ class FoodLeft(CoordinatorEntity, SensorEntity):
         return PERCENTAGE
 
 
-class FoodDispensedHistory(CoordinatorEntity, SensorEntity):
+class FoodDispensedHistory(CoordinatorEntity, SensorEntity, RestoreEntity):
     """Track total food dispensed for PetKit feeders."""
 
     def __init__(self, coordinator, feeder_id):
@@ -4161,6 +4163,8 @@ class FoodDispensedHistory(CoordinatorEntity, SensorEntity):
             coordinator.food_dispensed = {}
         if feeder_id not in coordinator.food_dispensed:
             coordinator.food_dispensed[feeder_id] = 0
+
+        LOGGER.debug(f"Initialized FoodDispensedHistory for feeder {feeder_id}")
 
     @property
     def feeder_data(self) -> Feeder:
@@ -4224,8 +4228,21 @@ class FoodDispensedHistory(CoordinatorEntity, SensorEntity):
         LOGGER.debug(f"Logged feeding: {amount}g for feeder {self.feeder_id}")
 
     async def async_added_to_hass(self) -> None:
-        """Handle added to Hass."""
+        """Handle entity which is about to be added to Home Assistant."""
         await super().async_added_to_hass()
+
+        # Restore the last state
+        last_state = await self.async_get_last_state()
+        if last_state is not None and last_state.state != STATE_UNKNOWN:
+            self.coordinator.food_dispensed[self.feeder_id] = int(last_state.state)
+            self._attr_native_value = int(last_state.state)
+            self._attr_extra_state_attributes.update(last_state.attributes)
+            LOGGER.debug(f"Restored state for {self.name}: {self.native_value}")
+
+        # Listen for manual feed events
+        self._unsub_manual_feed = self.hass.bus.async_listen(
+            'petkit_manual_feed', self._handle_manual_feed_event
+        )
 
         @callback
         async def _reset_counter(now):
@@ -4243,3 +4260,14 @@ class FoodDispensedHistory(CoordinatorEntity, SensorEntity):
             self.hass, _reset_counter, hour=0, minute=0, second=0
         )
         self.async_on_remove(remove_track_time)
+
+    async def _handle_manual_feed_event(self, event):
+        """Handle manual feed events."""
+        if event.data.get('feeder_id') == self.feeder_id:
+            amount = event.data.get('amount', 0)
+            self.log_feeding(amount)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Handle removal."""
+        self._unsub_manual_feed()
+        await super().async_will_remove_from_hass()
