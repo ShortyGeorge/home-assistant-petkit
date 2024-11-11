@@ -363,8 +363,8 @@ class ManualFeed(CoordinatorEntity, SelectEntity):
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""
         ha_to_petkit = MANUAL_FEED_TO_PETKIT.get(option)
-
         LOGGER.debug(f'Sending manual feed command to {self.feeder_data.data["name"]} for {option} ({ha_to_petkit})')
+
         await self.coordinator.client.manual_feeding(self.feeder_data, ha_to_petkit)
 
         self.hass.bus.async_fire('petkit_manual_feed', {

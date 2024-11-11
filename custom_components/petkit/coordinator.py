@@ -1,12 +1,11 @@
 """DataUpdateCoordinator for the PetKit integration."""
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, date, timezone
 
 from petkitaio import PetKitClient
 from petkitaio.exceptions import AuthError, PetKitError, RegionError, ServerError
 from petkitaio.model import PetKitData
-
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
@@ -26,6 +25,8 @@ class PetKitDataUpdateCoordinator(DataUpdateCoordinator):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize the PetKit coordinator."""
         self.food_dispensed = {}
+        self.accounted_feedings = {}
+        self.today_date = date.today()
 
         if entry.options[TIMEZONE] == "Set Automatically":
             tz = None
@@ -49,45 +50,67 @@ class PetKitDataUpdateCoordinator(DataUpdateCoordinator):
         except RegionError as error:
             raise ConfigEntryAuthFailed(error) from error
 
-    async def _async_update_data(self) -> PetKitData:
+    async def _async_update_data(self):
         """Fetch data from PetKit."""
-
         try:
             data = await self.client.get_petkit_data()
-            # LOGGER.debug(f'Found the following PetKit devices/pets: {data}')
+            LOGGER.debug('Fetched PetKit data')
 
-            # Check for feedings since last update
+            # Initialize daily counters if needed
+            if not hasattr(self, 'today_date') or date.today() != self.today_date:
+                # Reset daily counters
+                self.food_dispensed = {}
+                self.accounted_feedings = {}
+                self.today_date = date.today()
+                LOGGER.debug("Date change detected, reset daily counters.")
+
             for feeder_id, feeder_data in data.feeders.items():
                 # Initialize if not exists
                 if feeder_id not in self.food_dispensed:
                     self.food_dispensed[feeder_id] = 0
 
-                # Get the total amount dispensed today from the feeder's state
-                feeder_state = feeder_data.data.get('state', {})
-                current_total = feeder_state.get('realAmountTotal', 0)
+                if feeder_id not in self.accounted_feedings:
+                    self.accounted_feedings[feeder_id] = set()
 
-                # Get previous total from the last data
-                previous_total = 0
-                if self.data and self.data.feeders and feeder_id in self.data.feeders:
-                    previous_feeder_data = self.data.feeders[feeder_id].data
-                    previous_feeder_state = previous_feeder_data.get('state', {})
-                    previous_total = previous_feeder_state.get('realAmountTotal', 0)
+                # Get feeder timezone offset and create timezone object
+                feeder_timezone_offset = feeder_data.data.get('timezone', 0)  # in hours
+                feeder_timezone = timezone(timedelta(hours=feeder_timezone_offset))
 
-                # Calculate the difference
-                if current_total > previous_total:
-                    amount_difference = current_total - previous_total
-                    self.food_dispensed[feeder_id] += amount_difference
-                    LOGGER.debug(f"Detected feeding of {amount_difference}g for feeder {feeder_id}")
+                feeder_now = datetime.now(feeder_timezone)
+                feeder_now_seconds = (
+                    feeder_now.hour * 3600 + feeder_now.minute * 60 + feeder_now.second
+                )
+                LOGGER.debug(
+                    f"Feeder {feeder_id} current time (seconds since midnight): {feeder_now_seconds}"
+                )
 
-                    # Notify any registered food dispensed sensors
-                    for entity in self.hass.data[DOMAIN][self.config_entry.entry_id]["entities"]:
-                        if isinstance(entity, FoodDispensedHistory) and entity.feeder_id == feeder_id:
-                            entity.log_feeding(amount_difference)
-                            break
+                # Process scheduled feedings
+                feed_data = feeder_data.data.get('feed', {})
+                items = feed_data.get('items', [])
+
+                for item in items:
+                    scheduled_time = item.get('time', 0)  # in seconds since midnight
+                    amount = item.get('amount', 0)
+
+                    # If scheduled_time has passed and not already accounted for
+                    if (
+                        scheduled_time <= feeder_now_seconds
+                        and scheduled_time not in self.accounted_feedings.get(feeder_id, set())
+                    ):
+                        self.accounted_feedings.setdefault(feeder_id, set()).add(scheduled_time)
+
+                        # Fire an event for the scheduled feed
+                        self.hass.bus.async_fire(
+                            'petkit_scheduled_feed',
+                            {'feeder_id': feeder_id, 'amount': amount},
+                        )
+                        LOGGER.debug(
+                            f"Detected scheduled feeding of {amount}g at {scheduled_time}s for feeder {feeder_id}"
+                        )
+
+            return data
 
         except (AuthError, RegionError) as error:
             raise ConfigEntryAuthFailed(error) from error
         except (ServerError, PetKitError) as error:
             raise UpdateFailed(error) from error
-        else:
-            return data
